@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pvc-poc.fullname" . }}
+  labels:
+    {{- include "pvc-poc.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "pvc-poc.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "pvc-poc.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "pvc-poc.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          volumeMounts:
+          {{- range .Values.persistentVolumes }}
+            - name: {{ .name }}
+              mountPath: {{ .mount }}
+          {{- end }}
+          {{- if .Values.diskMonitor.enabled }}
+            - name: readiness-script
+              mountPath: /mnt/
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+        {{- if .Values.diskMonitor.enabled }}
+        - name: {{ .Values.diskMonitor.name }}
+          image: {{ .Values.diskMonitor.image }}
+          volumeMounts:
+          {{- range .Values.persistentVolumes }}
+            - name: {{ .name }}
+              mountPath: {{ .mount }}
+          {{- end }}
+          {{- if .Values.diskMonitor.enabled }}
+            - name: readiness-script
+              mountPath: /mnt/
+          {{- end }}
+          ports:
+            - name: {{ .Values.diskMonitor.port.name }}
+              containerPort: {{ .Values.diskMonitor.port.containerPort }}
+              protocol: {{ .Values.diskMonitor.port.protocol }}
+          readinessProbe:
+            exec:
+              command: 
+              - /bin/sh
+              - -c
+              - |
+                #!/bin/sh
+                all_disks_good=true
+                disk_report="Disk usage alert"
+
+                disk_usage_below_threshold() {
+                  mount=$1
+                  threshold=$2
+                  usage=$(df -h "${mount}" | tail -1 | awk '{print $5}' | cut -d% -f1)
+                  if [ ${usage} -gt ${threshold} ]; then
+                    disk_report="${disk_report}: ${mount} current use ${usage}%;"
+                    all_disks_good=false
+                    fi
+                }
+                {{- range .Values.diskMonitor.alerts }}
+                disk_usage_below_threshold "{{ .mount }}" {{ .threshold }}
+                {{- end }}
+                if ${all_disks_good}; then
+                  exit 0;
+                else
+                  echo "${disk_report}"
+                  exit 1;
+                fi
+            initialDelaySeconds: 30
+            failureThreshold: 3
+        {{- end }}  
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+      {{- range  .Values.persistentVolumes }} 
+      - name: {{ .name }}
+        persistentVolumeClaim:
+          claimName: {{ .name }}
+      {{- end }}
+      {{- if .Values.diskMonitor.enabled }}
+      - name: readiness-script
+        configMap:
+          name: readiness.sh
+      {{- end }}

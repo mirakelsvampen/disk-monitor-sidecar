@@ -1,0 +1,31 @@
+{{- if .Values.diskMonitor.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: readiness.sh
+data:
+  readiness.sh: |
+    #!/bin/sh
+
+    all_disks_good=true
+    disk_report="Disk usage alert"
+
+    disk_usage_below_threshold() {
+      mount=$1
+      threshold=$2
+      usage=$(df -h "${mount}" | tail -1 | awk '{print $5}' | cut -d% -f1)
+      if [ ${usage} -gt ${threshold} ]; then
+        disk_report="${disk_report}: ${mount} current use ${usage}%;"
+        all_disks_good=false
+        fi
+    }
+    {{- range .Values.diskMonitor.alerts }}
+    disk_usage_below_threshold "{{ .mount }}" {{ .threshold }}
+    {{- end }}
+    if ${all_disks_good}; then
+      exit 0;
+    else
+      echo "${disk_report}"
+      exit 1;
+    fi
+{{- end }}
